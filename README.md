@@ -1,4 +1,4 @@
-# SAT Reading and Writing Practice Test 2
+# SAT Reading and Writing Practice Test 3 (Simulacro 3, Aug-Oct 2026)
 
 Independent static test for GitHub Pages.
 
@@ -13,4 +13,8 @@ Independent static test for GitHub Pages.
 7. Copy the `/exec` URL.
 8. Paste that URL into `app.js` in `CONFIG.scriptUrl`.
 
-The script creates student-answer columns only: `M1_Q1` through `M1_Q27` and `M2_Q1` through `M2_Q27`. It does not create columns with correct answers.
+The script creates one row per submission with the scores, an SAT estimate, each student answer (`M1_Q1`…`M2_Q27`) and the correct answer next to it (`M1_Q1_CORRECT`…). Run `setupSheet` once from the editor to create and format the headers.
+
+After editing `Code.gs`, publish a **new version** of the existing deployment (Deploy > Manage deployments > Edit > Version: New version) so the `/exec` URL stays the same.
+
+Use a separate Google Sheet (or at least a separate tab) for each simulacro so results from different tests do not mix.

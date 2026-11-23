@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="google" content="notranslate" />
-    <title>SAT Reading and Writing Practice Test 2</title>
+    <title>SAT Reading and Writing Practice Test 3</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body class="notranslate" translate="no">
@@ -12,9 +12,11 @@
       <section id="startScreen" class="start-screen">
         <div class="start-panel">
           <p class="eyebrow">SAT Reading and Writing</p>
-          <h1>Practice Test 2</h1>
+          <h1>Practice Test 3</h1>
           <p class="start-copy">
             This test has two timed modules. Each module has 27 questions and 32 minutes.
+            When Module 1 ends you move on to Module 2 and cannot go back.
+            Keyboard: A&ndash;D to answer, arrow keys to move between questions.
           </p>
           <form id="studentForm" class="student-form">
             <label>
@@ -91,9 +93,11 @@
               </div>
             </div>
           </div>
-          <p id="submissionMessage" class="start-copy">
-            Your instructor will review your results.
+          <p id="submissionMessage" class="start-copy" aria-live="polite">
+            Sending your answers to your instructor...
           </p>
+          <button id="retrySubmitBtn" type="button" class="primary-button" hidden>Try again</button>
+          <button id="newAttemptBtn" type="button" class="nav-button" hidden>Start a new attempt (another student)</button>
         </div>
       </section>
     </main>

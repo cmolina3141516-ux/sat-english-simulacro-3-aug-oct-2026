@@ -1,7 +1,10 @@
 const CONFIG = {
   scriptUrl: "https://script.google.com/macros/s/AKfycbxIGXgO2hOL40rfsZTXB76_XK_n86P6UymXv7jYZMFNAF0JCvaGKb-e3bpl7MO6JQ2u/exec",
+  testName: "SAT Reading and Writing Practice Test 3 - Aug-Oct 2026 (Module 2 Harder)",
+  storageKey: "sat-rw-simulacro-3-aug-oct-2026",
   questionsPerModule: 27,
   moduleSeconds: 32 * 60,
+  submitAttempts: 3,
 };
 
 const modules = [
@@ -19,6 +22,8 @@ const modules = [
   },
 ];
 
+const CHOICES = ["A", "B", "C", "D"];
+
 const ANSWER_KEY = {
   module1: [
     "D", "B", "B", "A", "D", "A", "A", "A", "A",
@@ -32,21 +37,28 @@ const ANSWER_KEY = {
   ],
 };
 
+function emptyAnswers() {
+  return {
+    module1: Array(CONFIG.questionsPerModule).fill(""),
+    module2: Array(CONFIG.questionsPerModule).fill(""),
+  };
+}
+
 const state = {
+  phase: "start", // start | test | done
   studentName: "",
   studentId: "",
   moduleIndex: 0,
   questionIndex: 0,
-  secondsLeft: CONFIG.moduleSeconds,
-  timerId: null,
-  timerExpired: false,
-  submissionStarted: false,
-  answers: {
-    module1: Array(CONFIG.questionsPerModule).fill(""),
-    module2: Array(CONFIG.questionsPerModule).fill(""),
-  },
+  deadline: 0, // epoch ms when the current module ends
+  answers: emptyAnswers(),
   startedAt: "",
+  submittedAt: "",
+  submissionStatus: "", // "" | sending | sent | failed
 };
+
+let timerId = null;
+let transitioning = false;
 
 const els = {
   startScreen: document.getElementById("startScreen"),
@@ -66,6 +78,8 @@ const els = {
   nextBtn: document.getElementById("nextBtn"),
   moduleActionBtn: document.getElementById("moduleActionBtn"),
   submissionMessage: document.getElementById("submissionMessage"),
+  retrySubmitBtn: document.getElementById("retrySubmitBtn"),
+  newAttemptBtn: document.getElementById("newAttemptBtn"),
   scoreSummary: document.getElementById("scoreSummary"),
   satEstimate: document.getElementById("satEstimate"),
   satEstimateRange: document.getElementById("satEstimateRange"),
@@ -73,6 +87,30 @@ const els = {
   module2Score: document.getElementById("module2Score"),
   totalScore: document.getElementById("totalScore"),
 };
+
+/* ---------- persistence ---------- */
+
+function saveState() {
+  try {
+    localStorage.setItem(CONFIG.storageKey, JSON.stringify(state));
+  } catch (error) {
+    // Storage may be unavailable (private mode); the test still works without it.
+  }
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(CONFIG.storageKey);
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    if (!saved || !saved.answers || !Array.isArray(saved.answers.module1)) return null;
+    return saved;
+  } catch (error) {
+    return null;
+  }
+}
+
+/* ---------- helpers ---------- */
 
 function padQuestion(number) {
   return String(number).padStart(2, "0");
@@ -86,34 +124,67 @@ function currentAnswers() {
   return state.answers[currentModule().id];
 }
 
+function secondsLeft() {
+  return Math.max(0, Math.ceil((state.deadline - Date.now()) / 1000));
+}
+
 function formatTime(seconds) {
   const minutes = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
 }
 
+function imageSrc(module, questionNumber) {
+  return `${module.imagePath}${padQuestion(questionNumber)}.png`;
+}
+
+function preloadModuleImages(module) {
+  for (let i = 1; i <= CONFIG.questionsPerModule; i += 1) {
+    const img = new Image();
+    img.src = imageSrc(module, i);
+  }
+}
+
+function showScreen(name) {
+  els.startScreen.hidden = name !== "start";
+  els.testScreen.hidden = name !== "test";
+  els.doneScreen.hidden = name !== "done";
+}
+
+/* ---------- timer ---------- */
+
 function renderTimer() {
-  els.timerText.textContent = formatTime(state.secondsLeft);
-  els.timerText.classList.toggle("submit-warning", state.secondsLeft <= 300);
+  const left = secondsLeft();
+  els.timerText.textContent = formatTime(left);
+  els.timerText.classList.toggle("submit-warning", left <= 300);
+}
+
+function tick() {
+  renderTimer();
+  if (state.phase === "test" && secondsLeft() <= 0) {
+    handleModuleTimeExpired();
+  }
 }
 
 function startTimer() {
-  if (state.timerExpired || state.submissionStarted) return;
-  clearInterval(state.timerId);
-  renderTimer();
-  state.timerId = setInterval(() => {
-    state.secondsLeft -= 1;
-    if (state.secondsLeft <= 0) {
-      state.secondsLeft = 0;
-      clearInterval(state.timerId);
-      state.timerId = null;
-      state.timerExpired = true;
-      renderTimer();
-      handleModuleTimeExpired();
-      return;
-    }
-    renderTimer();
-  }, 1000);
+  clearInterval(timerId);
+  tick();
+  // Wall-clock based: throttled background tabs or open dialogs cannot pause the clock.
+  timerId = setInterval(tick, 500);
+}
+
+function stopTimer() {
+  clearInterval(timerId);
+  timerId = null;
+}
+
+/* ---------- rendering ---------- */
+
+function selectAnswer(choice) {
+  if (state.phase !== "test" || transitioning) return;
+  currentAnswers()[state.questionIndex] = choice;
+  saveState();
+  renderQuestion();
 }
 
 function renderQuestion() {
@@ -124,22 +195,23 @@ function renderQuestion() {
   els.moduleLabel.textContent = module.label;
   els.moduleTitle.textContent = module.title;
   els.questionCounter.textContent = `Question ${questionNumber} of ${CONFIG.questionsPerModule}`;
-  els.questionImage.src = `${module.imagePath}${padQuestion(questionNumber)}.png`;
+  const src = imageSrc(module, questionNumber);
+  if (!els.questionImage.src.endsWith(src.replace("./", ""))) {
+    els.questionImage.src = src;
+  }
   els.questionImage.alt = `${module.label}, question ${questionNumber}`;
   els.prevBtn.disabled = state.questionIndex === 0;
   els.nextBtn.disabled = state.questionIndex === CONFIG.questionsPerModule - 1;
   els.moduleActionBtn.textContent = state.moduleIndex === 0 ? "Finish Module 1" : "Submit Test";
 
   els.answerButtons.innerHTML = "";
-  ["A", "B", "C", "D"].forEach((choice) => {
+  CHOICES.forEach((choice) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `choice-button${answer === choice ? " selected" : ""}`;
     button.textContent = choice;
-    button.addEventListener("click", () => {
-      currentAnswers()[state.questionIndex] = choice;
-      renderQuestion();
-    });
+    button.setAttribute("aria-pressed", answer === choice ? "true" : "false");
+    button.addEventListener("click", () => selectAnswer(choice));
     els.answerButtons.appendChild(button);
   });
 
@@ -162,44 +234,66 @@ function renderQuestionGrid() {
     button.textContent = `Q ${index + 1}`;
     button.addEventListener("click", () => {
       state.questionIndex = index;
+      saveState();
       renderQuestion();
     });
     els.questionGrid.appendChild(button);
   });
 }
 
+/* ---------- flow ---------- */
+
 function unansweredCount(moduleId) {
   return state.answers[moduleId].filter((answer) => !answer).length;
 }
 
 function goToNextModule() {
-  if (state.timerExpired || state.submissionStarted) return;
+  if (state.phase !== "test" || state.moduleIndex !== 0) return;
   state.moduleIndex = 1;
   state.questionIndex = 0;
-  state.secondsLeft = CONFIG.moduleSeconds;
+  state.deadline = Date.now() + CONFIG.moduleSeconds * 1000;
+  saveState();
+  preloadModuleImages(currentModule());
   renderQuestion();
   startTimer();
 }
 
 function handleModuleTimeExpired() {
-  window.alert(
-    "Time is up. Your answers recorded so far will now be submitted."
-  );
+  if (transitioning || state.phase !== "test") return;
+  transitioning = true;
+  stopTimer();
+
+  if (state.moduleIndex === 0) {
+    window.alert("Time is up for Module 1. Your Module 1 answers are saved. Module 2 starts now.");
+    transitioning = false;
+    goToNextModule();
+    return;
+  }
+
+  window.alert("Time is up. Your answers recorded so far will now be submitted.");
+  transitioning = false;
   submitTest();
 }
 
 function handleModuleAction() {
+  if (state.phase !== "test" || transitioning) return;
   const module = currentModule();
   const missing = unansweredCount(module.id);
 
   if (state.moduleIndex === 0) {
     const message =
       missing > 0
-        ? `You have ${missing} unanswered question(s) in Module 1. Continue to Module 2?`
-        : "Finish Module 1 and continue to Module 2?";
-    if (window.confirm(message)) {
-      goToNextModule();
+        ? `You have ${missing} unanswered question(s) in Module 1. You cannot return to Module 1 later. Continue to Module 2?`
+        : "Finish Module 1 and continue to Module 2? You cannot return to Module 1 later.";
+    transitioning = true;
+    const ok = window.confirm(message);
+    transitioning = false;
+    // Time may have run out while the dialog was open.
+    if (secondsLeft() <= 0) {
+      handleModuleTimeExpired();
+      return;
     }
+    if (ok) goToNextModule();
     return;
   }
 
@@ -207,18 +301,21 @@ function handleModuleAction() {
     missing > 0
       ? `You have ${missing} unanswered question(s) in Module 2. Submit your test now?`
       : "Submit your test now?";
-  if (window.confirm(message)) {
-    submitTest();
-  }
+  transitioning = true;
+  const ok = window.confirm(message);
+  transitioning = false;
+  if (ok || secondsLeft() <= 0) submitTest();
 }
+
+/* ---------- scoring ---------- */
 
 function buildPayload() {
   return {
-    testName: "SAT Reading and Writing Practice Test 2 - Aug-Oct 2026 (Module 2 Harder)",
+    testName: CONFIG.testName,
     studentName: state.studentName,
     studentId: state.studentId,
     startedAt: state.startedAt,
-    submittedAt: new Date().toISOString(),
+    submittedAt: state.submittedAt,
     answers: {
       module1: state.answers.module1,
       module2: state.answers.module2,
@@ -234,8 +331,10 @@ function scoreModule(studentAnswers, answerKey) {
 }
 
 function estimateSatScore(totalCorrect) {
-  const clampedTotal = Math.max(0, Math.min(CONFIG.questionsPerModule * 2, totalCorrect));
-  return Math.round(200 + (clampedTotal / (CONFIG.questionsPerModule * 2)) * 600);
+  const maxRaw = CONFIG.questionsPerModule * 2;
+  const clampedTotal = Math.max(0, Math.min(maxRaw, totalCorrect));
+  // SAT section scores are reported in steps of 10.
+  return Math.round((200 + (clampedTotal / maxRaw) * 600) / 10) * 10;
 }
 
 function estimateSatRange(score) {
@@ -268,67 +367,167 @@ function renderScoreSummary(summary) {
   els.satEstimateRange.textContent = `Estimated range: ${summary.satRange}`;
 }
 
-async function submitTest() {
-  if (state.submissionStarted) return;
-  state.submissionStarted = true;
-  clearInterval(state.timerId);
-  state.timerId = null;
-  const payload = buildPayload();
-  const scoreSummary = calculateScoreSummary();
+/* ---------- submission ---------- */
 
-  els.testScreen.hidden = true;
-  els.doneScreen.hidden = false;
-  renderScoreSummary(scoreSummary);
-
+function renderSubmissionStatus() {
+  const messages = {
+    sending: "Sending your answers to your instructor... Do not close this page.",
+    sent: "Your answers were submitted. Your instructor will review your results.",
+    failed:
+      "Your answers could not be sent. Check your internet connection and press \"Try again\". Do not close this page.",
+  };
   if (!CONFIG.scriptUrl) {
     els.submissionMessage.textContent =
       "Submission is not connected yet. Add your Google Apps Script web app URL in app.js before sharing this test.";
-    return;
+  } else {
+    els.submissionMessage.textContent = messages[state.submissionStatus] || messages.sending;
   }
-
-  try {
-    await fetch(CONFIG.scriptUrl, {
-      method: "POST",
-      mode: "no-cors",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify(payload),
-    });
-    els.submissionMessage.textContent =
-      "Your answers were submitted. Your instructor will review your results.";
-  } catch (error) {
-    els.submissionMessage.textContent =
-      "Your answers could not be submitted. Tell your instructor before closing this page.";
-  }
+  els.retrySubmitBtn.hidden = state.submissionStatus !== "failed";
+  els.newAttemptBtn.hidden = state.submissionStatus !== "sent";
 }
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function sendPayload() {
+  if (!CONFIG.scriptUrl) return;
+  state.submissionStatus = "sending";
+  saveState();
+  renderSubmissionStatus();
+
+  const body = JSON.stringify(buildPayload());
+  for (let attempt = 1; attempt <= CONFIG.submitAttempts; attempt += 1) {
+    try {
+      // no-cors: the response is opaque, so a resolved fetch only confirms the request left the browser.
+      await fetch(CONFIG.scriptUrl, {
+        method: "POST",
+        mode: "no-cors",
+        keepalive: true,
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body,
+      });
+      state.submissionStatus = "sent";
+      saveState();
+      renderSubmissionStatus();
+      return;
+    } catch (error) {
+      if (attempt < CONFIG.submitAttempts) await sleep(1500 * attempt);
+    }
+  }
+  state.submissionStatus = "failed";
+  saveState();
+  renderSubmissionStatus();
+}
+
+function showDoneScreen() {
+  showScreen("done");
+  renderScoreSummary(calculateScoreSummary());
+  renderSubmissionStatus();
+}
+
+function submitTest() {
+  if (state.phase === "done") return;
+  stopTimer();
+  state.phase = "done";
+  state.submittedAt = new Date().toISOString();
+  saveState();
+  showDoneScreen();
+  sendPayload();
+}
+
+/* ---------- events ---------- */
 
 els.studentForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  state.phase = "test";
   state.studentName = els.studentName.value.trim();
   state.studentId = els.studentId.value.trim();
   state.startedAt = new Date().toISOString();
-  els.startScreen.hidden = true;
-  els.testScreen.hidden = false;
+  state.moduleIndex = 0;
+  state.questionIndex = 0;
+  state.answers = emptyAnswers();
+  state.deadline = Date.now() + CONFIG.moduleSeconds * 1000;
+  saveState();
+  showScreen("test");
+  preloadModuleImages(currentModule());
   renderQuestion();
   startTimer();
 });
 
 els.prevBtn.addEventListener("click", () => {
   state.questionIndex = Math.max(0, state.questionIndex - 1);
+  saveState();
   renderQuestion();
 });
 
 els.nextBtn.addEventListener("click", () => {
   state.questionIndex = Math.min(CONFIG.questionsPerModule - 1, state.questionIndex + 1);
+  saveState();
   renderQuestion();
 });
 
 els.moduleActionBtn.addEventListener("click", handleModuleAction);
 
+els.retrySubmitBtn.addEventListener("click", () => {
+  if (state.submissionStatus === "sending") return;
+  sendPayload();
+});
+
+els.newAttemptBtn.addEventListener("click", () => {
+  if (!window.confirm("Clear this result from this device so another student can start the test?")) return;
+  try {
+    localStorage.removeItem(CONFIG.storageKey);
+  } catch (error) {
+    // ignore
+  }
+  window.location.reload();
+});
+
+els.questionImage.addEventListener("error", () => {
+  els.questionImage.alt = "This question could not load. Check your connection; it will retry when you return to it.";
+  els.questionImage.removeAttribute("src");
+});
+
 document.addEventListener("keydown", (event) => {
-  if (els.testScreen.hidden) return;
+  if (state.phase !== "test") return;
+  if (event.ctrlKey || event.metaKey || event.altKey || event.repeat) return;
+  if (event.target instanceof HTMLInputElement) return;
   const key = event.key.toUpperCase();
-  if (["A", "B", "C", "D"].includes(key)) {
-    currentAnswers()[state.questionIndex] = key;
-    renderQuestion();
+  if (CHOICES.includes(key)) {
+    selectAnswer(key);
+  } else if (event.key === "ArrowRight" && !els.nextBtn.disabled) {
+    els.nextBtn.click();
+  } else if (event.key === "ArrowLeft" && !els.prevBtn.disabled) {
+    els.prevBtn.click();
   }
 });
+
+window.addEventListener("beforeunload", (event) => {
+  const unsent = state.phase === "done" && state.submissionStatus !== "sent";
+  if (state.phase === "test" || unsent) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+});
+
+/* ---------- resume after reload ---------- */
+
+(function resume() {
+  const saved = loadState();
+  if (!saved || saved.phase === "start") return;
+  Object.assign(state, saved);
+
+  if (state.phase === "test") {
+    showScreen("test");
+    preloadModuleImages(currentModule());
+    renderQuestion();
+    startTimer(); // if the deadline passed while the page was closed, this advances/submits immediately
+    return;
+  }
+
+  if (state.phase === "done") {
+    showDoneScreen();
+    if (state.submissionStatus !== "sent") sendPayload();
+  }
+})();

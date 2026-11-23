@@ -374,3 +374,8 @@ button:disabled {
     max-height: calc(100vh - 300px);
   }
 }
+
+#retrySubmitBtn,
+#newAttemptBtn {
+  margin-top: 12px;
+}

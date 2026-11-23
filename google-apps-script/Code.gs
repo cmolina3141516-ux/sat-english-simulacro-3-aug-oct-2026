@@ -1,5 +1,6 @@
 const SPREADSHEET_ID = '1909OPBoyEYwfHn66x3qmFEUphH4ZQbul266Tyl2Iq6I';
 const SHEET_NAME = 'Responses';
+const TEST_NAME = 'SAT Reading and Writing Practice Test 3 - Aug-Oct 2026 (Module 2 Harder)';
 
 const ANSWER_KEY = {
   module1: [
@@ -15,45 +16,75 @@ const ANSWER_KEY = {
 };
 
 function doPost(e) {
-  const payload = JSON.parse(e.postData.contents);
-  const module1Answers = normalizeAnswers(payload.answers && payload.answers.module1);
-  const module2Answers = normalizeAnswers(payload.answers && payload.answers.module2);
-  const module1Score = scoreModule(module1Answers, ANSWER_KEY.module1);
-  const module2Score = scoreModule(module2Answers, ANSWER_KEY.module2);
-  const totalScore = module1Score + module2Score;
-  const satEstimate = estimateRwScore(totalScore);
-  const satEstimateRange = estimateRwScoreRange(satEstimate);
-
-  const sheet = getResponseSheet();
-  ensureHeaders(sheet);
-
-  const rowValues = {
-    'Timestamp': new Date(),
-    'Test Name': payload.testName || 'SAT Reading and Writing Practice Test 2 - Aug-Oct 2026 (Module 2 Harder)',
-    'Student Name': payload.studentName || '',
-    'Student Email or ID': payload.studentId || '',
-    'Started At': payload.startedAt || '',
-    'Submitted At': payload.submittedAt || '',
-    'Module 1 Score': `${module1Score}/27`,
-    'Module 2 Score': `${module2Score}/27`,
-    'Total Score': `${totalScore}/54`,
-    'SAT Estimate': satEstimate,
-    'SAT Estimate Range': satEstimateRange
-  };
-
-  for (let i = 1; i <= 27; i += 1) {
-    rowValues[`M1_Q${i}`] = module1Answers[i - 1];
-    rowValues[`M1_Q${i}_CORRECT`] = ANSWER_KEY.module1[i - 1];
-    rowValues[`M2_Q${i}`] = module2Answers[i - 1];
-    rowValues[`M2_Q${i}_CORRECT`] = ANSWER_KEY.module2[i - 1];
+  // Serialize submissions so simultaneous students cannot corrupt headers or rows.
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(30000);
+  } catch (err) {
+    return jsonOutput({ ok: false, error: 'busy' });
   }
 
-  appendRowByHeader(sheet, rowValues);
-  formatCorrectAnswerColumns(sheet);
+  try {
+    const payload = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    const module1Answers = normalizeAnswers(payload.answers && payload.answers.module1);
+    const module2Answers = normalizeAnswers(payload.answers && payload.answers.module2);
+    const module1Score = scoreModule(module1Answers, ANSWER_KEY.module1);
+    const module2Score = scoreModule(module2Answers, ANSWER_KEY.module2);
+    const totalScore = module1Score + module2Score;
+    const satEstimate = estimateRwScore(totalScore);
+    const satEstimateRange = estimateRwScoreRange(satEstimate);
 
+    const sheet = getResponseSheet();
+    const headersAdded = ensureHeadersFast(sheet);
+
+    const rowValues = {
+      'Timestamp': new Date(),
+      'Test Name': payload.testName || TEST_NAME,
+      'Student Name': payload.studentName || '',
+      'Student Email or ID': payload.studentId || '',
+      'Started At': payload.startedAt || '',
+      'Submitted At': payload.submittedAt || '',
+      'Module 1 Score': `${module1Score}/27`,
+      'Module 2 Score': `${module2Score}/27`,
+      'Total Score': `${totalScore}/54`,
+      'SAT Estimate': satEstimate,
+      'SAT Estimate Range': satEstimateRange
+    };
+
+    for (let i = 1; i <= 27; i += 1) {
+      rowValues[`M1_Q${i}`] = module1Answers[i - 1];
+      rowValues[`M1_Q${i}_CORRECT`] = ANSWER_KEY.module1[i - 1];
+      rowValues[`M2_Q${i}`] = module2Answers[i - 1];
+      rowValues[`M2_Q${i}_CORRECT`] = ANSWER_KEY.module2[i - 1];
+    }
+
+    appendRowByHeader(sheet, rowValues);
+    if (headersAdded) formatCorrectAnswerColumns(sheet);
+
+    return jsonOutput({ ok: true });
+  } catch (err) {
+    console.error(err);
+    return jsonOutput({ ok: false, error: String(err) });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function jsonOutput(obj) {
   return ContentService
-    .createTextOutput(JSON.stringify({ ok: true }))
+    .createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+// Cheap check on every submission; the full migration (ensureHeaders) only runs
+// when columns are missing, instead of rewriting/reformatting every row each time.
+function ensureHeadersFast(sheet) {
+  const headers = getHeaders(sheet);
+  const expected = buildHeaders();
+  const missing = expected.some(h => headers.indexOf(h) === -1);
+  if (!missing) return false;
+  ensureHeaders(sheet);
+  return true;
 }
 
 function doGet() {
